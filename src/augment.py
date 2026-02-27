@@ -9,41 +9,70 @@ class AugmentConfig:
     allow_horizontal_flip: bool = False
 
 
-def _apply_keras_spatial_ops(image: tf.Tensor, mode: str) -> tf.Tensor:
+_AUGMENTER_CACHE: dict[tuple[str, bool], tf.keras.Sequential] = {}
+
+
+def _resolve_aug_params(mode: str) -> dict[str, float]:
     if mode == "light":
-        rotation = 0.04
-        translate = 0.04
-        zoom = 0.05
-    else:
-        rotation = 0.06
-        translate = 0.06
-        zoom = 0.08
+        return {
+            "rotation": 0.04,
+            "translate": 0.04,
+            "zoom": 0.05,
+            "contrast": 0.04,
+            "noise_std": 2.0,
+        }
+    return {
+        "rotation": 0.06,
+        "translate": 0.06,
+        "zoom": 0.08,
+        "contrast": 0.06,
+        "noise_std": 3.5,
+    }
 
-    image = tf.keras.layers.RandomRotation(factor=rotation, fill_mode="reflect")(image)
-    image = tf.keras.layers.RandomTranslation(height_factor=translate, width_factor=translate, fill_mode="reflect")(image)
-    image = tf.keras.layers.RandomZoom(height_factor=(-zoom, zoom), width_factor=(-zoom, zoom), fill_mode="reflect")(image)
-    return image
 
-
-def augment_image(image: tf.Tensor, aug_cfg: dict | None = None) -> tf.Tensor:
+def get_augmenter(aug_cfg: dict | None = None) -> tf.keras.Sequential:
     aug_cfg = aug_cfg or {}
     mode = aug_cfg.get("aug_mode", aug_cfg.get("mode", "light"))
     allow_horizontal_flip = bool(aug_cfg.get("allow_horizontal_flip", False))
 
-    image = tf.cast(image, tf.float32)
-    image = _apply_keras_spatial_ops(image, mode)
+    cache_key = (mode, allow_horizontal_flip)
+    if cache_key in _AUGMENTER_CACHE:
+        return _AUGMENTER_CACHE[cache_key]
 
-    brightness_delta = 0.04 if mode == "light" else 0.06
-    contrast_lower, contrast_upper = (0.96, 1.04) if mode == "light" else (0.94, 1.06)
-    noise_std = 2.0 if mode == "light" else 3.5
-
-    image = tf.image.random_brightness(image, max_delta=brightness_delta * 255.0)
-    image = tf.image.random_contrast(image, lower=contrast_lower, upper=contrast_upper)
-
+    params = _resolve_aug_params(mode)
+    layers = [
+        tf.keras.layers.RandomRotation(factor=params["rotation"], fill_mode="reflect"),
+        tf.keras.layers.RandomTranslation(
+            height_factor=params["translate"], width_factor=params["translate"], fill_mode="reflect"
+        ),
+        tf.keras.layers.RandomZoom(
+            height_factor=(-params["zoom"], params["zoom"]),
+            width_factor=(-params["zoom"], params["zoom"]),
+            fill_mode="reflect",
+        ),
+        tf.keras.layers.RandomContrast(factor=params["contrast"]),
+    ]
     if allow_horizontal_flip:
-        image = tf.image.random_flip_left_right(image)
+        layers.append(tf.keras.layers.RandomFlip(mode="horizontal"))
 
-    noise = tf.random.normal(shape=tf.shape(image), stddev=noise_std)
-    image = image + noise
+    augmenter = tf.keras.Sequential(layers, name=f"xray_augmenter_{mode}_{int(allow_horizontal_flip)}")
+    augmenter.build((None, None, None, 3))
+    _AUGMENTER_CACHE[cache_key] = augmenter
+    return augmenter
+
+
+def augment_image(image: tf.Tensor, augmenter: tf.keras.Sequential, aug_cfg: dict | None = None) -> tf.Tensor:
+    aug_cfg = aug_cfg or {}
+    mode = aug_cfg.get("aug_mode", aug_cfg.get("mode", "light"))
+    params = _resolve_aug_params(mode)
+    use_gaussian_noise = bool(aug_cfg.get("gaussian_noise", True))
+
+    image = tf.cast(image, tf.float32)
+    image = augmenter(image, training=True)
+
+    if use_gaussian_noise:
+        noise_std = float(aug_cfg.get("noise_std", params["noise_std"]))
+        image = image + tf.random.normal(shape=tf.shape(image), stddev=noise_std)
+
     image = tf.clip_by_value(image, 0.0, 255.0)
     return image

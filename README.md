@@ -122,3 +122,11 @@ For each run, include these artifacts as evidence:
 - `metrics.json`, `report.txt`, `confusion_matrix.png` (honest evaluation)
 - `outputs/leakage_report.txt` (split leakage proof)
 - `outputs/leaderboard.csv` (experiment ranking)
+
+## Augmentation graph smoke test (regression guard)
+
+Run this quick check after augmentation changes to confirm tf.data mapping can iterate multiple batches without `tf.function` variable-creation crashes:
+
+```bash
+python scripts/smoke_augment_graph.py --data_dir "<path>" --img_size 224 --batch 2
+```
