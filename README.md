@@ -125,6 +125,8 @@ For each run, include these artifacts as evidence:
 
 ## Augmentation graph smoke test (regression guard)
 
+Keras preprocessing augmentation layers (e.g., rotation/zoom/contrast/flip) expect batched 4D tensors `(B,H,W,C)`. In `tf.data.map`, examples are often single images `(H,W,C)`, so the pipeline temporarily adds a batch dimension before calling the augmenter and removes it afterward to avoid shape-rank crashes.
+
 Run this quick check after augmentation changes to confirm tf.data mapping can iterate multiple batches without `tf.function` variable-creation crashes:
 
 ```bash
