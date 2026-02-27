@@ -6,7 +6,7 @@ from pathlib import Path
 
 import tensorflow as tf
 
-from src.augment import augment_image
+from src.augment import augment_image, get_augmenter
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
@@ -129,6 +129,7 @@ def _preprocess(image, label):
 def build_datasets(data_dir, img_size, batch_size, aug_cfg, cache, seed):
     class_names = detect_classes(data_dir)
     splits, _ = collect_split_files(data_dir, class_names)
+    augmenter = get_augmenter(aug_cfg)
 
     def make_dataset(split_name, training=False):
         payload = splits[split_name]
@@ -140,7 +141,7 @@ def build_datasets(data_dir, img_size, batch_size, aug_cfg, cache, seed):
 
         if training:
             ds = ds.shuffle(buffer_size=max(len(payload["paths"]), 1), seed=seed, reshuffle_each_iteration=True)
-            ds = ds.map(lambda x, y: (augment_image(x, aug_cfg), y), num_parallel_calls=tf.data.AUTOTUNE)
+            ds = ds.map(lambda x, y: (augment_image(x, augmenter, aug_cfg), y), num_parallel_calls=tf.data.AUTOTUNE)
 
         ds = ds.map(_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.batch(batch_size)
