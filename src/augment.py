@@ -68,11 +68,24 @@ def augment_image(image: tf.Tensor, augmenter: tf.keras.Sequential, aug_cfg: dic
     use_gaussian_noise = bool(aug_cfg.get("gaussian_noise", True))
 
     image = tf.cast(image, tf.float32)
-    image = augmenter(image, training=True)
+
+    if image.shape.rank == 3:
+        image = tf.expand_dims(image, axis=0)
+        image = augmenter(image, training=True)
+        image = tf.squeeze(image, axis=0)
+    elif image.shape.rank == 4:
+        image = augmenter(image, training=True)
+    else:
+        rank = tf.rank(image)
+        image = tf.cond(
+            tf.equal(rank, 3),
+            lambda: tf.squeeze(augmenter(tf.expand_dims(image, axis=0), training=True), axis=0),
+            lambda: augmenter(image, training=True),
+        )
 
     if use_gaussian_noise:
         noise_std = float(aug_cfg.get("noise_std", params["noise_std"]))
-        image = image + tf.random.normal(shape=tf.shape(image), stddev=noise_std)
+        image = image + tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=noise_std, dtype=image.dtype)
 
     image = tf.clip_by_value(image, 0.0, 255.0)
     return image

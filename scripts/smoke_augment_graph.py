@@ -1,4 +1,5 @@
 import argparse
+import traceback
 import sys
 from pathlib import Path
 
@@ -18,26 +19,30 @@ def main():
     args = parser.parse_args()
 
     aug_cfg = {
-        "aug_mode": "light",
+        "aug_mode": "medium",
         "allow_horizontal_flip": False,
         "gaussian_noise": True,
     }
 
-    train_ds, _, _, class_names = build_datasets(
-        data_dir=args.data_dir,
-        img_size=args.img_size,
-        batch_size=args.batch,
-        aug_cfg=aug_cfg,
-        cache=False,
-        seed=args.seed,
-    )
+    try:
+        train_ds, _, _, class_names = build_datasets(
+            data_dir=args.data_dir,
+            img_size=args.img_size,
+            batch_size=args.batch,
+            aug_cfg=aug_cfg,
+            cache=False,
+            seed=args.seed,
+        )
 
-    it = iter(train_ds)
-    for step in range(2):
-        images, labels = next(it)
-        print(f"batch={step} images={images.shape} labels={labels.shape} classes={len(class_names)}")
+        it = iter(train_ds)
+        for step in range(2):
+            images, labels = next(it)
+            print(f"batch={step} images={images.shape} labels={labels.shape} classes={len(class_names)}")
 
-    print("Smoke test passed: no tf.Variable singleton creation crash during augmentation mapping.")
+        print("SMOKE OK")
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
