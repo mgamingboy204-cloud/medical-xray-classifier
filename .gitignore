@@ -1,0 +1,13 @@
+# BLOCK THE ENTIRE DATASET
+Dental OPG Image dataset/
+**/Dental OPG Image dataset/
+
+# Artifacts
+outputs/
+*.keras
+*.h5
+
+# Python
+.venv/
+__pycache__/
+*.pyc
