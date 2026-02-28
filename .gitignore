@@ -7,8 +7,10 @@ venv/
 
 # Artifacts
 outputs/
+outputs_pt/
 *.keras
 *.h5
+*.pt
 
 # Tooling
 .pytest_cache/

@@ -1,0 +1,5 @@
+name: top2_prob_average
+strategy: probability_average
+num_models: 2
+rank_metric: test_macro_f1
+tie_breaker: test_accuracy
