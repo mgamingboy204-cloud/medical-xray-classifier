@@ -1,12 +1,13 @@
 # Medical X-ray Classifier (Dental OPG, Multi-class)
 
-Leak-proof, reproducible TensorFlow training/evaluation pipeline for dental OPG X-ray classification.
+This repository now provides **two pipelines**:
 
-## Dataset (not included in Git)
+1. **PyTorch (recommended/default)**: production-ready Kaggle GPU training/evaluation in `src_pt/`.
+2. TensorFlow (legacy, kept intact) in `src/`.
 
-This repository **does not include the dataset** (3.7GB). Keep data local and point scripts to the local path.
+The dataset is not stored in Git and must be mounted locally (including Kaggle input mounts).
 
-Expected structure:
+## Dataset layout (required)
 
 ```text
 Classification/
@@ -27,108 +28,87 @@ Classification/
     Wisdom/
 ```
 
-Windows dataset path used in examples:
+## Recommended setup (Kaggle GPU)
 
-```text
-C:/Users/MOHITH REDDY/Documents/projects/medical-image/Dental OPG Image dataset/Classification/
+Install dependencies in a Kaggle notebook terminal or cell:
+
+```bash
+pip install -r requirements.txt
+# If Kaggle image does not already include the desired CUDA PyTorch build:
+# pip install torch torchvision
+# pip install timm albumentations opencv-python
 ```
 
-## Setup
+> `timm` is the PyTorch image-model collection used for ConvNeXt/EfficientNetV2 backbones.
+
+### Kaggle run workflow
+
+```bash
+# 1) clone repository
+# 2) install deps
+# 3) leakage gate (hard requirement before training)
+python -m src.data --check-only --data_dir "/kaggle/input/<dataset>/Classification"
+
+# 4) train PyTorch model
+python -m src_pt.train_pt --config configs_pt/convnext_tiny_224.yaml --data_dir "/kaggle/input/<dataset>/Classification"
+
+# 5) evaluate saved best checkpoint on Test split
+python -m src_pt.eval_pt --checkpoint outputs_pt/<run_name>/best.pt --data_dir "/kaggle/input/<dataset>/Classification" --img_size 224 --batch_size 32 --tta_crops 5
+
+# 6) full experiment suite + leaderboard
+python -m src_pt.experiments_pt --data_dir "/kaggle/input/<dataset>/Classification"
+```
+
+## Local workflow
 
 ```bash
 python -m venv .venv
-# Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
+python -m src.data --check-only --data_dir "<PATH>/Classification"
+python -m src_pt.train_pt --config configs_pt/convnext_tiny_224.yaml --data_dir "<PATH>/Classification"
+python -m src_pt.eval_pt --checkpoint outputs_pt/<run_name>/best.pt --data_dir "<PATH>/Classification" --img_size 224 --batch_size 32 --tta_crops 5
 ```
 
-## One-command leakage check (required before training)
-
-```bash
-python -m src.data --check-only --data_dir "C:/Users/MOHITH REDDY/Documents/projects/medical-image/Dental OPG Image dataset/Classification/"
-```
-
-- SHA256 hash overlap is checked across Train/Valid/Test.
-- Report is written to `outputs/leakage_report.txt`.
-- If overlap exists, command exits non-zero and training must be stopped.
-
-## One-command training (baseline)
-
-```bash
-python -m src.train --config configs/baseline.yaml --data_dir "C:/Users/MOHITH REDDY/Documents/projects/medical-image/Dental OPG Image dataset/Classification/"
-```
-
-Outputs are written per run:
+## PyTorch output artifacts (per run)
 
 ```text
-outputs/<timestamp>_<model>_<img>_<loss>_<tag>/
-  best.keras
+outputs_pt/<run_name>/
+  best.pt
+  last.pt
   history.csv
   training_curve.png
+  training_curves.png
   run_config.json
   env.json
+  report.txt
+  confusion_matrix.png
+  metrics.json
 ```
 
-## One-command evaluation
+These artifacts provide faculty-ready evidence for reproducibility and performance reporting.
 
-```bash
-python -m src.eval --checkpoint outputs/<run_dir>/best.keras --data_dir "C:/Users/MOHITH REDDY/Documents/projects/medical-image/Dental OPG Image dataset/Classification/" --img_size 224 --batch_size 16
-```
+## Experiment suite in `src_pt.experiments_pt`
 
-Evaluation artifacts:
+The runner executes:
 
-- `report.txt` (per-class precision/recall/F1)
-- `confusion_matrix.png`
-- `metrics.json` (accuracy, macro F1, weighted F1, per-class F1)
+1. `convnext_tiny_224`
+2. `effnetv2_b3_320`
+3. `dinov2_vits14_224` (freeze + linear head), optional fine-tune on larger GPUs
+4. best single model with multi-crop (`tta_crops=5`)
+5. top-2 ensemble by probability averaging
 
-## One-command experiment runner + leaderboard
+Leaderboard output:
 
-```bash
-python -m src.experiments --data_dir "C:/Users/MOHITH REDDY/Documents/projects/medical-image/Dental OPG Image dataset/Classification/"
-```
+- `outputs_pt/leaderboard.csv` ranked by `test_macro_f1`, then `test_accuracy`.
 
-Runs:
-1. Baseline MobileNetV3Large (224)
-2. Deeper fine-tune (unfreeze 120)
-3. EfficientNetV2B0 (224)
-4. Focal loss gamma sweep (1.5, 2.0, 2.5) on best backbone
-5. High-res 320 run (batch-safe)
-6. Optional TTA evaluation on best run
+## Leakage policy
 
-Leaderboard:
+The existing SHA256 split-overlap check from `src.data.check_for_leakage` is reused as a hard gate in the PyTorch pipeline as well. Any overlap across Train/Valid/Test aborts training/evaluation.
 
-- `outputs/leaderboard.csv` ranked by `test_macro_f1`, then `test_accuracy`.
+## TensorFlow legacy pipeline
 
-## Reproducibility
+TensorFlow commands still work exactly as before via `src.train`, `src.eval`, and `src.experiments`.
 
-- Global seeds are set for Python, NumPy, TensorFlow.
-- Runtime environment is exported in each run (`env.json`): Python, TensorFlow, GPU, CUDA/cuDNN when available.
-
-## GTX 1650 (4GB VRAM) defaults + OOM handling
-
-Default configs are 1650-safe:
-- `img_size=224`
-- `batch_size=16`
-- mixed precision enabled when GPU is available
-
-If OOM occurs during training:
-- Pipeline retries **once** automatically with `batch_size=8`.
-- If OOM persists, the run fails with a clear error.
-
-## Evidence for faculty
-
-For each run, include these artifacts as evidence:
-- `run_config.json` and `env.json` (reproducibility context)
-- `history.csv` and `training_curve.png` (training behavior)
-- `metrics.json`, `report.txt`, `confusion_matrix.png` (honest evaluation)
-- `outputs/leakage_report.txt` (split leakage proof)
-- `outputs/leaderboard.csv` (experiment ranking)
-
-## Augmentation graph smoke test (regression guard)
-
-Keras preprocessing augmentation layers (e.g., rotation/zoom/contrast/flip) expect batched 4D tensors `(B,H,W,C)`. In `tf.data.map`, examples are often single images `(H,W,C)`, so the pipeline temporarily adds a batch dimension before calling the augmenter and removes it afterward to avoid shape-rank crashes.
-
-Run this quick check after augmentation changes to confirm tf.data mapping can iterate multiple batches without `tf.function` variable-creation crashes:
-
-```bash
-python scripts/smoke_augment_graph.py --data_dir "<path>" --img_size 224 --batch 2
-```
+> Note: native TensorFlow Windows GPU support is not available beyond TF 2.10. For current GPU training, use Kaggle or WSL2/Linux.
