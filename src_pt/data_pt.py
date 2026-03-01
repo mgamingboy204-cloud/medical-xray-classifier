@@ -1,5 +1,7 @@
+import hashlib
 import os
 import platform
+from collections import defaultdict
 from pathlib import Path
 
 import albumentations as A
@@ -9,10 +11,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import ImageFolder
 
-from src.data import check_for_leakage
-
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
 _clahe_train = A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.8)
 _clahe_eval = A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=1.0)
 
@@ -44,14 +46,16 @@ def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
         _clahe_train,
         A.Sharpen(alpha=(0.05, 0.2), lightness=(0.9, 1.1), p=0.2),
     ]
+
     if aug_mode == "medium":
         base.extend(
             [
-                A.ShiftScaleRotate(
-                    shift_limit=0.06,
-                    scale_limit=0.08,
-                    rotate_limit=10,
-                    border_mode=cv2.BORDER_REFLECT_101,
+                A.Affine(
+                    translate_percent={"x": (-0.06, 0.06), "y": (-0.06, 0.06)},
+                    scale=(0.92, 1.08),
+                    rotate=(-10, 10),
+                    shear=0,
+                    mode=cv2.BORDER_REFLECT_101,
                     p=0.85,
                 ),
                 A.RandomBrightnessContrast(brightness_limit=0.18, contrast_limit=0.18, p=0.55),
@@ -61,24 +65,28 @@ def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
     else:
         base.extend(
             [
-                A.ShiftScaleRotate(
-                    shift_limit=0.03,
-                    scale_limit=0.05,
-                    rotate_limit=7,
-                    border_mode=cv2.BORDER_REFLECT_101,
+                A.Affine(
+                    translate_percent={"x": (-0.03, 0.03), "y": (-0.03, 0.03)},
+                    scale=(0.95, 1.05),
+                    rotate=(-7, 7),
+                    shear=0,
+                    mode=cv2.BORDER_REFLECT_101,
                     p=0.75,
                 ),
                 A.RandomBrightnessContrast(brightness_limit=0.12, contrast_limit=0.12, p=0.4),
                 A.GaussNoise(std_range=(0.005, 0.02), p=0.15),
             ]
         )
+
     if hflip:
         base.append(A.HorizontalFlip(p=0.5))
+
     base.append(
-        A.CoarseDropout(
-            max_holes=8,
-            max_height=max(1, int(img_size * 0.12)),
-            max_width=max(1, int(img_size * 0.12)),
+        A.Cutout(
+            num_holes=8,
+            max_h_size=max(1, int(img_size * 0.12)),
+            max_w_size=max(1, int(img_size * 0.12)),
+            fill_value=0,
             p=0.25,
         )
     )
@@ -87,6 +95,105 @@ def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
 
 def _build_eval_aug(img_size: int) -> A.Compose:
     return A.Compose([A.Resize(img_size, img_size), _clahe_eval])
+
+
+def _iter_images(folder: Path):
+    for path in sorted(folder.rglob("*")):
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+            yield path
+
+
+def _detect_classes(data_dir: str | Path) -> list[str]:
+    train_dir = Path(data_dir) / "Train"
+    if not train_dir.exists():
+        raise FileNotFoundError(f"Missing Train directory: {train_dir}")
+    class_names = sorted([p.name for p in train_dir.iterdir() if p.is_dir()])
+    if not class_names:
+        raise ValueError("No class subfolders found under Train/")
+    return class_names
+
+
+def _collect_split_files(data_dir: str | Path, class_names: list[str]):
+    splits = {}
+    counts = defaultdict(lambda: defaultdict(int))
+    data_root = Path(data_dir)
+
+    for split in ["Train", "Valid", "Test"]:
+        paths = []
+        for class_name in class_names:
+            class_dir = data_root / split / class_name
+            if not class_dir.exists():
+                raise FileNotFoundError(f"Missing class directory: {class_dir}")
+            class_images = [str(p) for p in _iter_images(class_dir)]
+            counts[split][class_name] = len(class_images)
+            paths.extend(class_images)
+        splits[split] = {"paths": paths}
+    return splits, counts
+
+
+def _sha256_file(path: str) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def check_for_leakage(data_dir: str, report_path: str = "outputs/leakage_report.txt"):
+    class_names = _detect_classes(data_dir)
+    split_files, counts = _collect_split_files(data_dir, class_names)
+
+    split_hashes = {}
+    hash_to_paths = {}
+    for split_name, payload in split_files.items():
+        hashes = set()
+        local_map = defaultdict(list)
+        for path in payload["paths"]:
+            digest = _sha256_file(path)
+            hashes.add(digest)
+            local_map[digest].append(path)
+        split_hashes[split_name] = hashes
+        hash_to_paths[split_name] = local_map
+
+    overlaps = {
+        "Train_Valid": split_hashes["Train"] & split_hashes["Valid"],
+        "Train_Test": split_hashes["Train"] & split_hashes["Test"],
+        "Valid_Test": split_hashes["Valid"] & split_hashes["Test"],
+    }
+
+    report_file = Path(report_path)
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write("=== Dataset Split Summary ===\n")
+        for split in ["Train", "Valid", "Test"]:
+            total = sum(counts[split].values())
+            f.write(f"{split}: total={total}\n")
+            for cls in class_names:
+                f.write(f"  - {cls}: {counts[split][cls]}\n")
+
+        f.write("\n=== Leakage Check (SHA256 overlap across splits) ===\n")
+        total_overlap = 0
+        for pair, hashes in overlaps.items():
+            total_overlap += len(hashes)
+            f.write(f"{pair}: {len(hashes)} duplicate hashes\n")
+            for digest in list(hashes)[:5]:
+                left, right = pair.split("_")
+                left_samples = hash_to_paths[left][digest][:2]
+                right_samples = hash_to_paths[right][digest][:2]
+                f.write(f"  hash={digest}\n")
+                for p in left_samples:
+                    f.write(f"    {left}: {p}\n")
+                for p in right_samples:
+                    f.write(f"    {right}: {p}\n")
+        f.write(f"\nTotal overlapping hashes: {total_overlap}\n")
+
+    return {
+        "has_leakage": any(len(v) > 0 for v in overlaps.values()),
+        "report_path": str(report_file),
+    }
 
 
 class AlbumentationsImageFolder(Dataset):
