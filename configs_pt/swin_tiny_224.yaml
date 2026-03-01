@@ -1,11 +1,11 @@
-run_tag: effnetv2_b3_320
-model_name: tf_efficientnetv2_b3
-img_size: 320
-batch_size: 16
+run_tag: swin_tiny_224
+model_name: swin_tiny_patch4_window7_224
+img_size: 224
+batch_size: 32
 epochs: 25
 lr: 0.0001
 weight_decay: 0.0001
-warmup_epochs: 2
+warmup_epochs: 1
 patience: 10
 seed: 42
 aug_mode: medium

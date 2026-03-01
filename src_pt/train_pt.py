@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from sklearn.metrics import f1_score
 
@@ -13,6 +14,34 @@ from src_pt.data_pt import build_loaders
 from src_pt.model_pt import create_model
 from src_pt.utils_pt import get_env_info, json_save, set_global_seed, timestamp_run_name
 
+
+
+
+def _cfg_get(config: dict, key: str, default=None):
+    loss_cfg = config.get("loss", {}) if isinstance(config.get("loss"), dict) else {}
+    if key in loss_cfg:
+        return loss_cfg[key]
+    return config.get(key, default)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0, weight=None, label_smoothing: float = 0.0):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits, targets):
+        ce = F.cross_entropy(
+            logits,
+            targets,
+            weight=self.weight,
+            label_smoothing=self.label_smoothing,
+            reduction="none",
+        )
+        pt = torch.exp(-ce)
+        loss = ((1.0 - pt) ** self.gamma) * ce
+        return loss.mean()
 
 def _compute_class_weights(targets, num_classes, device):
     counts = torch.bincount(torch.tensor(targets), minlength=num_classes).float()
@@ -45,7 +74,12 @@ def _run_epoch(model, loader, criterion, optimizer, scaler, device, scheduler=No
 
         with torch.set_grad_enabled(train):
             with torch.autocast(device_type="cuda", enabled=(device.type == "cuda")):
-                logits = model(images)
+                if images.ndim == 5:
+                    b, ncrops, c, h, w = images.shape
+                    images = images.view(b * ncrops, c, h, w)
+                    logits = model(images).view(b, ncrops, -1).mean(dim=1)
+                else:
+                    logits = model(images)
                 loss = criterion(logits, labels)
 
             if train:
@@ -93,7 +127,7 @@ def run_training(config: dict, data_dir: str, run_suffix: str = "") -> Path:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     run_name = timestamp_run_name(
-        config["model_name"], int(config["img_size"]), config.get("loss_type", "ce"), config.get("run_tag", "")
+        config["model_name"], int(config["img_size"]), _cfg_get(config, "loss_name", config.get("loss_type", "ce")), config.get("run_tag", "")
     )
     if run_suffix:
         run_name = f"{run_name}_{run_suffix}"
@@ -108,20 +142,25 @@ def run_training(config: dict, data_dir: str, run_suffix: str = "") -> Path:
         hflip=bool(config.get("allow_horizontal_flip", False)),
         seed=int(config["seed"]),
         num_workers=config.get("num_workers"),
+        val_tta_crops=int(config.get("val_tta_crops", 1)),
     )
 
     bundle = create_model(config, num_classes=len(class_names))
     model = bundle.model.to(device)
     ema = bundle.ema
 
+    use_class_weights = bool(_cfg_get(config, "use_class_weights", False))
     class_weights = None
-    if config.get("use_class_weights", False):
+    if use_class_weights:
         class_weights = _compute_class_weights(train_loader.dataset.targets, len(class_names), device)
 
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights,
-        label_smoothing=float(config.get("label_smoothing", 0.0)),
-    )
+    loss_name = str(_cfg_get(config, "loss_name", "ce")).lower()
+    label_smoothing = float(_cfg_get(config, "label_smoothing", 0.0))
+    if loss_name == "focal":
+        gamma = float(_cfg_get(config, "focal_gamma", 2.0))
+        criterion = FocalLoss(gamma=gamma, weight=class_weights, label_smoothing=label_smoothing)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=float(config["lr"]),

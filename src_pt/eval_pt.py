@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 
-from src_pt.data_pt import build_test_loader
+from src_pt.data_pt import AlbumentationsImageFolder, MultiCropInferenceDataset, _build_eval_aug
 from src_pt.model_pt import create_model
 from src_pt.utils_pt import json_save
 
@@ -18,7 +18,37 @@ def _forward_logits(model, images, device):
     return logits
 
 
-def predict_probabilities(checkpoint_path: str, data_dir: str, img_size: int, batch_size: int, tta_crops: int = 1):
+def _build_eval_loader(data_dir: str, split: str, img_size: int, batch_size: int, tta_crops: int, num_workers=None):
+    data_root = Path(data_dir)
+    split_root = data_root / split
+    workers = int(num_workers) if num_workers is not None else 4
+    workers = max(0, workers)
+    persistent = workers > 0
+
+    if tta_crops > 1:
+        ds = MultiCropInferenceDataset(split_root, img_size=img_size, eval_crops=tta_crops)
+    else:
+        ds = AlbumentationsImageFolder(split_root, _build_eval_aug(img_size))
+
+    loader = torch.utils.data.DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=workers,
+        pin_memory=True,
+        persistent_workers=persistent,
+    )
+    return loader, ds.classes
+
+
+def predict_probabilities(
+    checkpoint_path: str,
+    data_dir: str,
+    img_size: int,
+    batch_size: int,
+    tta_crops: int = 1,
+    split: str = "Test",
+):
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model_cfg = {"model_name": ckpt["model_name"], **ckpt.get("config", {})}
     bundle = create_model(model_cfg, num_classes=int(ckpt["num_classes"]))
@@ -29,13 +59,17 @@ def predict_probabilities(checkpoint_path: str, data_dir: str, img_size: int, ba
     model.to(device)
     model.eval()
 
-    loader, class_names = build_test_loader(
+    loader, loader_classes = _build_eval_loader(
         data_dir=data_dir,
+        split=split,
         img_size=img_size,
         batch_size=batch_size,
         tta_crops=tta_crops,
         num_workers=model_cfg.get("num_workers"),
     )
+    ckpt_classes = ckpt.get("class_names", loader_classes)
+    if list(ckpt_classes) != list(loader_classes):
+        raise RuntimeError(f"Class order mismatch between checkpoint and {split} dataset.")
 
     probs_all, y_true = [], []
     for images, labels in loader:
@@ -51,16 +85,17 @@ def predict_probabilities(checkpoint_path: str, data_dir: str, img_size: int, ba
         y_true.extend(labels.numpy().tolist())
 
     probs_np = np.concatenate(probs_all, axis=0)
-    return probs_np, np.array(y_true), class_names
+    return probs_np, np.array(y_true), list(loader_classes)
 
 
-def evaluate_checkpoint(checkpoint, data_dir, img_size, batch_size, tta_crops=1):
+def evaluate_checkpoint(checkpoint, data_dir, img_size, batch_size, tta_crops=1, split="Test"):
     probs, y_true, class_names = predict_probabilities(
         checkpoint_path=checkpoint,
         data_dir=data_dir,
         img_size=img_size,
         batch_size=batch_size,
         tta_crops=tta_crops,
+        split=split,
     )
     y_pred = probs.argmax(axis=1)
 
@@ -84,13 +119,14 @@ def evaluate_checkpoint(checkpoint, data_dir, img_size, batch_size, tta_crops=1)
     ax.set_yticklabels(class_names)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    ax.set_title("Confusion Matrix")
+    ax.set_title(f"Confusion Matrix ({split})")
     fig.colorbar(im, ax=ax)
     plt.tight_layout()
     fig.savefig(run_dir / "confusion_matrix.png")
     plt.close(fig)
 
     metrics = {
+        "split": split,
         "accuracy": float(acc),
         "macro_f1": float(macro_f1),
         "weighted_f1": float(weighted_f1),
@@ -108,6 +144,7 @@ def main():
     parser.add_argument("--img_size", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--tta_crops", type=int, default=1)
+    parser.add_argument("--split", choices=["Valid", "Test"], default="Test")
     args = parser.parse_args()
 
     metrics = evaluate_checkpoint(
@@ -116,6 +153,7 @@ def main():
         img_size=args.img_size,
         batch_size=args.batch_size,
         tta_crops=max(1, args.tta_crops),
+        split=args.split,
     )
     print(metrics)
 

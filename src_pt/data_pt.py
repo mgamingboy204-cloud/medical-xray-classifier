@@ -13,6 +13,8 @@ from src.data import check_for_leakage
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+_clahe_train = A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.8)
+_clahe_eval = A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=1.0)
 
 
 def _resolve_workers(num_workers: int | None) -> int:
@@ -37,7 +39,11 @@ def _load_rgb(path: str) -> np.ndarray:
 
 
 def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
-    base = [A.Resize(img_size, img_size)]
+    base = [
+        A.Resize(img_size, img_size),
+        _clahe_train,
+        A.Sharpen(alpha=(0.05, 0.2), lightness=(0.9, 1.1), p=0.2),
+    ]
     if aug_mode == "medium":
         base.extend(
             [
@@ -68,11 +74,19 @@ def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
         )
     if hflip:
         base.append(A.HorizontalFlip(p=0.5))
+    base.append(
+        A.CoarseDropout(
+            max_holes=8,
+            max_height=max(1, int(img_size * 0.12)),
+            max_width=max(1, int(img_size * 0.12)),
+            p=0.25,
+        )
+    )
     return A.Compose(base)
 
 
 def _build_eval_aug(img_size: int) -> A.Compose:
-    return A.Compose([A.Resize(img_size, img_size)])
+    return A.Compose([A.Resize(img_size, img_size), _clahe_eval])
 
 
 class AlbumentationsImageFolder(Dataset):
@@ -121,6 +135,7 @@ class MultiCropInferenceDataset(Dataset):
         path, label = self.samples[idx]
         image = _load_rgb(path)
         image = cv2.resize(image, (self.resize_size, self.resize_size), interpolation=cv2.INTER_AREA)
+        image = _clahe_eval(image=image)["image"]
         crops = []
         for y, x in self._crop_positions():
             crop = image[y : y + self.img_size, x : x + self.img_size]
@@ -128,7 +143,7 @@ class MultiCropInferenceDataset(Dataset):
         return torch.stack(crops, dim=0), label
 
 
-def build_loaders(data_dir, img_size, batch_size, aug_mode, hflip, seed, num_workers=None):
+def build_loaders(data_dir, img_size, batch_size, aug_mode, hflip, seed, num_workers=None, val_tta_crops: int = 1):
     leak = check_for_leakage(data_dir)
     if leak["has_leakage"]:
         raise RuntimeError(
@@ -142,8 +157,15 @@ def build_loaders(data_dir, img_size, batch_size, aug_mode, hflip, seed, num_wor
     gen.manual_seed(seed)
 
     train_ds = AlbumentationsImageFolder(data_root / "Train", _build_train_aug(img_size, aug_mode, hflip))
-    val_ds = AlbumentationsImageFolder(data_root / "Valid", _build_eval_aug(img_size))
+    if val_tta_crops > 1:
+        val_ds = MultiCropInferenceDataset(data_root / "Valid", img_size=img_size, eval_crops=val_tta_crops)
+    else:
+        val_ds = AlbumentationsImageFolder(data_root / "Valid", _build_eval_aug(img_size))
     test_ds = AlbumentationsImageFolder(data_root / "Test", _build_eval_aug(img_size))
+
+    class_names = train_ds.classes
+    if class_names != val_ds.classes or class_names != test_ds.classes:
+        raise RuntimeError("Class order mismatch across Train/Valid/Test folders.")
 
     train_loader = DataLoader(
         train_ds,
@@ -170,7 +192,7 @@ def build_loaders(data_dir, img_size, batch_size, aug_mode, hflip, seed, num_wor
         pin_memory=True,
         persistent_workers=persistent,
     )
-    return train_loader, val_loader, test_loader, train_ds.classes
+    return train_loader, val_loader, test_loader, class_names
 
 
 def build_test_loader(data_dir, img_size, batch_size, tta_crops=1, num_workers=None):
