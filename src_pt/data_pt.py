@@ -48,50 +48,44 @@ def _build_train_aug(img_size: int, aug_mode: str, hflip: bool) -> A.Compose:
     ]
 
     if aug_mode == "medium":
-        base.extend(
-            [
-                A.Affine(
-                    translate_percent={"x": (-0.06, 0.06), "y": (-0.06, 0.06)},
-                    scale=(0.92, 1.08),
-                    rotate=(-10, 10),
-                    shear=0,
-                    mode=cv2.BORDER_REFLECT_101,
-                    p=0.85,
-                ),
-                A.RandomBrightnessContrast(brightness_limit=0.18, contrast_limit=0.18, p=0.55),
-                A.GaussNoise(std_range=(0.01, 0.04), p=0.25),
-            ]
-        )
+        base.extend([
+            A.ShiftScaleRotate(
+                shift_limit=0.06,
+                scale_limit=0.08,
+                rotate_limit=10,
+                border_mode=cv2.BORDER_REFLECT_101,
+                p=0.85,
+            ),
+            A.RandomBrightnessContrast(0.18, 0.18, p=0.55),
+            A.GaussNoise(var_limit=(10.0, 50.0), p=0.25),
+        ])
     else:
-        base.extend(
-            [
-                A.Affine(
-                    translate_percent={"x": (-0.03, 0.03), "y": (-0.03, 0.03)},
-                    scale=(0.95, 1.05),
-                    rotate=(-7, 7),
-                    shear=0,
-                    mode=cv2.BORDER_REFLECT_101,
-                    p=0.75,
-                ),
-                A.RandomBrightnessContrast(brightness_limit=0.12, contrast_limit=0.12, p=0.4),
-                A.GaussNoise(std_range=(0.005, 0.02), p=0.15),
-            ]
-        )
+        base.extend([
+            A.ShiftScaleRotate(
+                shift_limit=0.03,
+                scale_limit=0.05,
+                rotate_limit=7,
+                border_mode=cv2.BORDER_REFLECT_101,
+                p=0.75,
+            ),
+            A.RandomBrightnessContrast(0.12, 0.12, p=0.4),
+            A.GaussNoise(var_limit=(5.0, 20.0), p=0.15),
+        ])
 
     if hflip:
         base.append(A.HorizontalFlip(p=0.5))
 
+    # Version-safe dropout
     base.append(
-        A.Cutout(
-            num_holes=8,
-            max_h_size=max(1, int(img_size * 0.12)),
-            max_w_size=max(1, int(img_size * 0.12)),
-            fill_value=0,
+        A.CoarseDropout(
+            max_holes=8,
+            max_height=int(img_size * 0.12),
+            max_width=int(img_size * 0.12),
             p=0.25,
         )
     )
-    return A.Compose(base)
 
+    return A.Compose(base)
 
 def _build_eval_aug(img_size: int) -> A.Compose:
     return A.Compose([A.Resize(img_size, img_size), _clahe_eval])
