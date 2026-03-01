@@ -182,10 +182,11 @@ def run_training(config: dict, data_dir: str, run_suffix: str = "") -> Path:
 
     for epoch in range(1, epochs + 1):
         train_loss, train_acc, _ = _run_epoch(model, train_loader, criterion, optimizer, scaler, device, scheduler, train=True)
-        val_loss, val_acc, val_f1 = _run_epoch(model, val_loader, criterion, optimizer, scaler, device, train=False)
+        
         if ema is not None:
             ema.update(model)
-
+        val_loss, val_acc, val_f1 = _run_epoch(model, val_loader, criterion, optimizer, scaler, device, train=False)
+        
         lr_now = float(optimizer.param_groups[0]["lr"])
         row = {
             "epoch": epoch,
