@@ -185,6 +185,9 @@ def run_training(config: dict, data_dir: str, run_suffix: str = "") -> Path:
         
         if ema is not None:
             ema.update(model)
+
+        if ema is not None:
+            ema.copy_to(model)
         val_loss, val_acc, val_f1 = _run_epoch(model, val_loader, criterion, optimizer, scaler, device, train=False)
         
         lr_now = float(optimizer.param_groups[0]["lr"])
