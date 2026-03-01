@@ -84,6 +84,13 @@ def create_model(config: dict, num_classes: int) -> ModelBundle:
         model = timm.create_model("convnext_tiny", pretrained=True, num_classes=num_classes)
     elif name == "tf_efficientnetv2_b3":
         model = timm.create_model("tf_efficientnetv2_b3", pretrained=True, num_classes=num_classes)
+    elif name == "convnext_base":
+        model = timm.create_model("convnext_base", pretrained=True, num_classes=num_classes)
+    elif name == "tf_efficientnetv2_l":
+        model = timm.create_model("tf_efficientnetv2_l", pretrained=True, num_classes=num_classes)
+    elif name == "swin_base":
+        # standard strong Swin baseline in timm
+        model = timm.create_model("swin_base_patch4_window7_224", pretrained=True, num_classes=num_classes)
     elif name == "dinov2_vits14":
         model = _build_dino(
             num_classes=num_classes,

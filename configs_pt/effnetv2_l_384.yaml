@@ -1,0 +1,24 @@
+run_tag: effnetv2_l_384
+model_name: tf_efficientnetv2_l
+img_size: 384
+batch_size: 8
+epochs: 40
+lr: 0.0001
+weight_decay: 0.05
+warmup_epochs: 2
+patience: 10
+seed: 42
+
+aug_mode: medium
+allow_horizontal_flip: false
+
+loss_name: focal
+focal_gamma: 2.0
+label_smoothing: 0.05
+use_class_weights: true
+
+mixed_precision: true
+use_ema: true
+ema_decay: 0.999
+num_workers: 4
+val_tta_crops: 5
