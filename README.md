@@ -192,3 +192,42 @@ On Kaggle GPU (P100/T4), typical ranges for this repo:
 - **3-model diverse ensemble + strong TTA**: macro-F1 **0.88-0.92**
 
 For reproducibility, train all three models, evaluate each with TTA, then run ensemble averaging on checkpoints from the best runs.
+
+
+## 10) 95%+ Recipe (EMA + val TTA + ensemble)
+Use stronger backbones with EMA enabled and validation-time TTA enabled in configs.
+
+### Train the three production configs
+```bash
+DATA_DIR="/content/drive/MyDrive/Dental OPG Image dataset/Classification"
+
+python -m src_pt.train_pt --config configs_pt/effnetv2_l_384.yaml --data_dir "$DATA_DIR"
+python -m src_pt.train_pt --config configs_pt/convnext_base_384.yaml --data_dir "$DATA_DIR"
+python -m src_pt.train_pt --config configs_pt/swin_base_224.yaml --data_dir "$DATA_DIR"
+```
+
+You can also run all three sequentially:
+```bash
+scripts/train_all.sh "$DATA_DIR"
+```
+
+### Ensemble on Test with heavy TTA
+```bash
+python -m src_pt.ensemble_pt \
+  --checkpoints \
+    outputs_pt/<RUN_EFFNET>/best.pt \
+    outputs_pt/<RUN_CONVNEXT>/best.pt \
+    outputs_pt/<RUN_SWIN>/best.pt \
+  --data_dir "$DATA_DIR" \
+  --img_size 384 \
+  --batch_size 8 \
+  --tta_crops 9 \
+  --split Test
+```
+
+`ensemble_pt` writes:
+- `outputs_pt/ensemble_metrics.json`
+- `outputs_pt/ensemble_report.txt`
+
+Note: Swin Base is trained at 224 while the command above uses `--img_size 384` for a unified loader. For strict input-size consistency, ensemble the two 384 models together and Swin separately at 224, then average probabilities externally.
+
